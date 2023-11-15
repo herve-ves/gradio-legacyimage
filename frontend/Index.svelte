@@ -2,50 +2,50 @@
 
 <script context="module" lang="ts">
 	export { default as Webcam } from "./shared/Webcam.svelte";
-	export { default as BaseImageUploader } from "./shared/ImageUploader.svelte";
-	export { default as BaseStaticImage } from "./shared/ImagePreview.svelte";
-	export { default as BaseExample } from "./Example.svelte";
 </script>
 
 <script lang="ts">
-	import type { Gradio, SelectData } from "@gradio/utils";
-	import StaticImage from "./shared/ImagePreview.svelte";
-	import ImageUploader from "./shared/ImageUploader.svelte";
+	import type { Gradio, SelectData, ShareData } from "@gradio/utils";
 
-	import { Block, Empty, UploadText } from "@gradio/atoms";
-	import { Image } from "@gradio/icons";
+	import Image from "./shared/Image.svelte";
+	import StaticImage from "./shared/ImagePreview.svelte";
+	import type { ImageData } from "./shared/types";
+
+	import { Block } from "@gradio/atoms";
+	import { _ } from "svelte-i18n";
 	import { StatusTracker } from "@gradio/statustracker";
-	import type { FileData } from "@gradio/client";
 	import type { LoadingStatus } from "@gradio/statustracker";
+	import { UploadText } from "@gradio/atoms";
 
 	export let elem_id = "";
 	export let elem_classes: string[] = [];
 	export let visible = true;
-	export let value: null | FileData = null;
+	export let value: null | ImageData = null;
 	export let label: string;
 	export let show_label: boolean;
-	export let show_download_button: boolean;
-	export let root: string;
 
+	export let source: "canvas" | "webcam" | "upload" = "upload";
+	export let tool: "editor" | "select" | "sketch" | "color-sketch" = "editor";
+	export let streaming: boolean;
+	export let pending: boolean;
 	export let height: number | undefined;
 	export let width: number | undefined;
+	export let mirror_webcam: boolean;
+	export let shape: [number, number];
+	export let brush_radius: number;
+	export let brush_color: string;
+	export let mask_opacity: number;
 
-	export let _selectable = false;
+	export let selectable = false;
 	export let container = true;
 	export let scale: number | null = null;
 	export let min_width: number | undefined = undefined;
 	export let loading_status: LoadingStatus;
-	export let show_share_button = false;
-	export let sources: ("clipboard" | "webcam" | "upload")[] = [
-		"upload",
-		"clipboard",
-		"webcam"
-	];
-	export let interactive: boolean;
-	export let streaming: boolean;
-	export let pending: boolean;
-	export let mirror_webcam: boolean;
 
+	export let show_download_button: boolean;
+	export let show_share_button = false;
+
+	export let interactive: boolean;
 	export let gradio: Gradio<{
 		change: never;
 		error: string;
@@ -58,12 +58,14 @@
 		share: ShareData;
 	}>;
 
-	$: value?.url && gradio.dispatch("change");
+	export let root: string;
+
+	$: value, gradio.dispatch("change");
+
 	let dragging: boolean;
+	const FIXED_HEIGHT = 240;
 
 	$: value = !value ? null : value;
-
-	let active_tool: null | "webcam" = null;
 </script>
 
 {#if !interactive}
@@ -90,25 +92,26 @@
 			on:select={({ detail }) => gradio.dispatch("select", detail)}
 			on:share={({ detail }) => gradio.dispatch("share", detail)}
 			on:error={({ detail }) => gradio.dispatch("error", detail)}
-			{root}
 			{value}
 			{label}
 			{show_label}
 			{show_download_button}
-			selectable={_selectable}
+			{selectable}
 			{show_share_button}
+
+			{root}
 			i18n={gradio.i18n}
 		/>
 	</Block>
 {:else}
 	<Block
 		{visible}
-		variant={value === null ? "dashed" : "solid"}
+		variant={value === null && source === "upload" ? "dashed" : "solid"}
 		border_mode={dragging ? "focus" : "base"}
 		padding={false}
 		{elem_id}
 		{elem_classes}
-		height={height || undefined}
+		height={height || (source === "webcam" ? undefined : FIXED_HEIGHT)}
 		{width}
 		allow_overflow={false}
 		{container}
@@ -121,12 +124,15 @@
 			{...loading_status}
 		/>
 
-		<ImageUploader
-			bind:active_tool
+		<Image
+			{brush_radius}
+			{brush_color}
+			{shape}
 			bind:value
-			selectable={_selectable}
-			{root}
-			{sources}
+			{source}
+			{tool}
+			{selectable}
+			{mask_opacity}
 			on:edit={() => gradio.dispatch("edit")}
 			on:clear={() => gradio.dispatch("clear")}
 			on:stream={() => gradio.dispatch("stream")}
@@ -139,20 +145,16 @@
 				loading_status.status = "error";
 				gradio.dispatch("error", detail);
 			}}
-			on:click={() => gradio.dispatch("error", "bad thing happened")}
-			on:error
 			{label}
 			{show_label}
 			{pending}
 			{streaming}
 			{mirror_webcam}
+
+			{root}
 			i18n={gradio.i18n}
 		>
-			{#if sources.includes("upload")}
-				<UploadText i18n={gradio.i18n} type="image" mode="short" />
-			{:else}
-				<Empty unpadded_box={true} size="large"><Image /></Empty>
-			{/if}
-		</ImageUploader>
+			<UploadText i18n={gradio.i18n} type="image"/>
+		</Image>
 	</Block>
 {/if}

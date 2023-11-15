@@ -1,22 +1,21 @@
 <script lang="ts">
 	import { createEventDispatcher } from "svelte";
-	import type { SelectData } from "@gradio/utils";
+
+	import type { SelectData, I18nFormatter } from "@gradio/utils";
 	import { uploadToHuggingFace } from "@gradio/utils";
 	import { BlockLabel, Empty, IconButton, ShareButton } from "@gradio/atoms";
-	import { Download } from "@gradio/icons";
+	import { Download, Image } from "@gradio/icons";
+
 	import { get_coordinates_of_clicked_image } from "./utils";
+	import type { ImageData } from "./types";
 
-	import { Image } from "@gradio/icons";
-	import { type FileData, normalise_file } from "@gradio/client";
-	import type { I18nFormatter } from "@gradio/utils";
-
-	export let value: null | FileData;
+	export let value: null | ImageData;
 	export let label: string | undefined = undefined;
 	export let show_label: boolean;
 	export let show_download_button = true;
 	export let selectable = false;
 	export let show_share_button = false;
-	export let root: string;
+
 	export let i18n: I18nFormatter;
 
 	const dispatch = createEventDispatcher<{
@@ -24,7 +23,7 @@
 		select: SelectData;
 	}>();
 
-	$: value = normalise_file(value, root, null);
+	$: value && dispatch("change", value.back);
 
 	const handle_click = (evt: MouseEvent): void => {
 		let coordinates = get_coordinates_of_clicked_image(evt);
@@ -35,13 +34,13 @@
 </script>
 
 <BlockLabel {show_label} Icon={Image} label={label || i18n("image.image")} />
-{#if value === null || !value.url}
+{#if value === null}
 	<Empty unpadded_box={true} size="large"><Image /></Empty>
 {:else}
 	<div class="icon-buttons">
 		{#if show_download_button}
 			<a
-				href={value.url}
+				href={value.back}
 				target={window.__is_colab__ ? "_blank" : null}
 				download={"image"}
 			>
@@ -62,18 +61,17 @@
 			/>
 		{/if}
 	</div>
-	<button on:click={handle_click}>
-		<img src={value.url} alt="" class:selectable loading="lazy" />
-	</button>
+	<!-- TODO: fix -->
+	<!-- svelte-ignore a11y-click-events-have-key-events -->
+	<!-- svelte-ignore a11y-no-noninteractive-element-interactions-->
+	<img src={value.back} alt="" class:selectable on:click={handle_click} />
 {/if}
 
 <style>
-	img,
-	button {
+	img {
 		width: var(--size-full);
 		height: var(--size-full);
 		object-fit: contain;
-		display: block;
 	}
 
 	.selectable {

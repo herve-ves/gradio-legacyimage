@@ -1,24 +1,36 @@
-"""gr.Image() component."""
+"""gr.LegacyImage() component."""
 
 from __future__ import annotations
 
 import warnings
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, Literal, cast, Optional, Union, TypedDict
 
 import numpy as np
-from gradio_client.documentation import document, set_documentation_group
+
+import PIL
+import PIL.ImageOps
 from PIL import Image as _Image  # using _ to minimize namespace pollution
 
-import gradio.image_utils as image_utils
 from gradio import processing_utils, utils
+from gradio_client import utils as client_utils
+from gradio_client.documentation import document, set_documentation_group
 from gradio.components.base import Component, StreamingInput
-from gradio.data_classes import FileData
+from gradio.data_classes import GradioModel
 from gradio.events import Events
+
+import gradio.image_utils as image_utils
 
 set_documentation_group("component")
 _Image.init()  # fixes https://github.com/gradio-app/gradio/issues/2843
 
+class PreprocessData(TypedDict):
+    back: Optional[Union[np.ndarray, _Image.Image, str]]
+    mask: Optional[Union[np.ndarray, _Image.Image, str]]
+
+class ImageData(GradioModel):
+    back: Optional[str] = None
+    mask: Optional[str] = None
 
 @document()
 class LegacyImage(StreamingInput, Component):
@@ -37,9 +49,10 @@ class LegacyImage(StreamingInput, Component):
         Events.stream,
         Events.select,
         Events.upload,
+        Events.edit,
     ]
 
-    data_model = FileData
+    data_model = ImageData
 
     def __init__(
         self,
@@ -50,7 +63,6 @@ class LegacyImage(StreamingInput, Component):
         image_mode: Literal[
             "1", "L", "P", "RGB", "RGBA", "CMYK", "YCbCr", "LAB", "HSV", "I", "F"
         ] = "RGB",
-        sources: list[Literal["upload", "webcam", "clipboard"]] | None = None,
         type: Literal["numpy", "pil", "filepath"] = "numpy",
         label: str | None = None,
         every: float | None = None,
@@ -67,6 +79,14 @@ class LegacyImage(StreamingInput, Component):
         render: bool = True,
         mirror_webcam: bool = True,
         show_share_button: bool | None = None,
+
+        source: Literal["upload", "webcam", "canvas"] = "upload",
+        invert_colors: bool = False,
+        shape: tuple[int, int] | None = None,
+        tool: Literal["editor", "select", "sketch", "color-sketch"] | None = None,
+        brush_radius: float | None = None,
+        brush_color: str = "#000000",
+        mask_opacity: float = 0.7,
     ):
         """
         Parameters:
@@ -74,7 +94,6 @@ class LegacyImage(StreamingInput, Component):
             height: Height of the displayed image in pixels.
             width: Width of the displayed image in pixels.
             image_mode: "RGB" if color, or "L" if black and white. See https://pillow.readthedocs.io/en/stable/handbook/concepts.html for other supported image modes and their meaning.
-            sources: List of sources for the image. "upload" creates a box where user can drop an image file, "webcam" allows user to take snapshot from their webcam, "clipboard" allows users to paste an image from the clipboard. If None, defaults to ["upload", "webcam", "clipboard"] if streaming is False, otherwise defaults to ["webcam"].
             type: The format the image is converted to before being passed into the prediction function. "numpy" converts the image to a numpy array with shape (height, width, 3) and values from 0 to 255, "pil" converts the image to a PIL image object, "filepath" passes a str path to a temporary file containing the image.
             label: The label for this component. Appears above the component and is also used as the header if there are a table of examples for this component. If None and used in a `gr.Interface`, the label will be the name of the parameter this component is assigned to.
             every: If `value` is a callable, run the function 'every' number of seconds while the client connection is open. Has no effect otherwise. Queue must be enabled. The event can be accessed (e.g. to cancel it) via this component's .load_event attribute.
@@ -102,33 +121,35 @@ class LegacyImage(StreamingInput, Component):
         self.height = height
         self.width = width
         self.image_mode = image_mode
-        valid_sources = ["upload", "webcam", "clipboard"]
-        if sources is None:
-            self.sources = (
-                ["webcam"] if streaming else ["upload", "webcam", "clipboard"]
+
+        valid_sources = ["upload", "webcam", "canvas"]
+        if source not in valid_sources:
+            raise ValueError(
+                f"Invalid value for parameter `source`: {source}. Please choose from one of: {valid_sources}"
             )
-        elif isinstance(sources, str):
-            self.sources = [sources]  # type: ignore
-        else:
-            self.sources = sources
-        for source in self.sources:  # type: ignore
-            if source not in valid_sources:
-                raise ValueError(
-                    f"`sources` must a list consisting of elements in {valid_sources}"
-                )
-        self.sources = sources
 
         self.streaming = streaming
         self.show_download_button = show_download_button
-        if streaming and self.sources != ["webcam"]:
-            raise ValueError(
-                "LegacyImage streaming only available if sources is ['webcam']. Streaming not supported with multiple sources."
-            )
+        if streaming and source != "webcam":
+            raise ValueError("Image streaming only available if source is 'webcam'.")
+
         self.show_share_button = (
             (utils.get_space() is not None)
             if show_share_button is None
             else show_share_button
         )
+
+        self.source = source
+        if tool is None:
+            self.tool = "sketch" if source == "canvas" else "editor"
+        else:
+            self.tool = tool
+        self.invert_colors = invert_colors
+        self.shape = shape
+        self.brush_radius = brush_radius
+        self.brush_color = brush_color
+        self.mask_opacity = mask_opacity
+
         super().__init__(
             label=label,
             every=every,
@@ -144,25 +165,69 @@ class LegacyImage(StreamingInput, Component):
             value=value,
         )
 
-    def preprocess(
-        self, payload: FileData | None
-    ) -> np.ndarray | _Image.Image | str | None:
-        if payload is None:
-            return payload
-        im = _Image.open(payload.path)
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            im = im.convert(self.image_mode)
+    def format_image(self, im: _Image.Image) -> np.ndarray | _Image.Image | str | None:
         return image_utils.format_image(
             im, cast(Literal["numpy", "pil", "filepath"], self.type), self.GRADIO_CACHE
         )
 
-    def postprocess(
-        self, value: np.ndarray | _Image.Image | str | Path | None
-    ) -> FileData | None:
-        if value is None:
+    def preprocess(self, x: ImageData) -> PreprocessData | None:
+        if x is None:
+            return x
+
+        mask_im = None
+        if self.tool == "sketch" and self.source in ["upload", "webcam"]:
+            mask_im = processing_utils.decode_base64_to_image(x.mask) if x.mask is not None else None
+        im = processing_utils.decode_base64_to_image(x.back)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            im = im.convert(self.image_mode)
+        if self.shape is not None:
+            im = processing_utils.resize_and_crop(im, self.shape)
+        if self.invert_colors:
+            im = PIL.ImageOps.invert(im)
+        if (
+            self.source == "webcam"
+            and self.mirror_webcam is True
+            and self.tool != "color-sketch"
+        ):
+            im = PIL.ImageOps.mirror(im)
+
+        if self.tool == "sketch" and self.source in ["upload", "webcam"]:
+            if mask_im.mode == "RGBA":  # whiten any opaque pixels in the mask
+                alpha_data = mask_im.getchannel("A").convert("L")
+                mask_im = _Image.merge("RGB", [alpha_data, alpha_data, alpha_data])
+            return {
+                "back": self.format_image(im),
+                "mask": self.format_image(mask_im)
+            }
+
+        return {
+            "back": self.format_image(im),
+            "mask": None
+        }
+
+    def postprocess(self, y: PreprocessData | None) -> ImageData | None:
+        if y is None:
             return None
-        return FileData(path=image_utils.save_image(value, self.GRADIO_CACHE))
+
+        if isinstance(y["back"], np.ndarray):
+            return ImageData(
+                back=processing_utils.encode_array_to_base64(y["back"]),
+                mask=None,
+            )
+        elif isinstance(y["back"], _Image.Image):
+            return ImageData(
+                back=processing_utils.encode_pil_to_base64(y["back"]),
+                mask=None,
+            )
+        elif isinstance(y["back"], (str, Path)):
+            return ImageData(
+                back=client_utils.encode_url_or_file_to_base64(y["back"]),
+                mask=None,
+            )
+        else:
+            raise ValueError("Cannot process this value as an Image")
 
     def check_streamable(self):
         if self.streaming and self.sources != ["webcam"]:
